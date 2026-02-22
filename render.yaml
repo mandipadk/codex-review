@@ -1,0 +1,79 @@
+services:
+  - type: web
+    name: pr-guardian-web
+    runtime: node
+    plan: starter
+    rootDir: .
+    buildCommand: pnpm install && pnpm build
+    startCommand: node services/web/dist/index.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: WEB_PORT
+        value: 3000
+      - key: WORKER_CONCURRENCY
+        value: 2
+      - key: AUTO_MIGRATE
+        value: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: pr-guardian-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: pr-guardian-redis
+          property: connectionString
+      - key: GITHUB_WEBHOOK_SECRET
+        sync: false
+      - key: GITHUB_APP_ID
+        sync: false
+      - key: GITHUB_APP_PRIVATE_KEY
+        sync: false
+      - key: REPO_ALLOWLIST
+        sync: false
+      - key: MAX_REPOS
+        value: 5
+      - key: CODEX_BIN
+        value: codex
+
+  - type: worker
+    name: pr-guardian-worker
+    runtime: node
+    plan: starter
+    rootDir: .
+    buildCommand: pnpm install && pnpm build
+    startCommand: node services/worker/dist/index.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: AUTO_MIGRATE
+        value: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: pr-guardian-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: pr-guardian-redis
+          property: connectionString
+      - key: GITHUB_APP_ID
+        sync: false
+      - key: GITHUB_APP_PRIVATE_KEY
+        sync: false
+      - key: CODEX_BIN
+        value: codex
+      - key: RUN_TIMEOUT_MS
+        value: 600000
+      - key: WORKER_CONCURRENCY
+        value: 2
+
+  - type: redis
+    name: pr-guardian-redis
+    plan: starter
+
+
+databases:
+  - name: pr-guardian-db
+    plan: starter

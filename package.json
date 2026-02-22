@@ -1,0 +1,29 @@
+{
+  "name": "pr-guardian-arena",
+  "version": "0.1.0",
+  "private": true,
+  "description": "GitHub-first PR copilot powered by Codex App Server",
+  "packageManager": "pnpm@10.29.3",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "dev:web": "pnpm --filter @pr-guardian/web dev",
+    "dev:worker": "pnpm --filter @pr-guardian/worker dev",
+    "dev:cf": "pnpm --filter @pr-guardian/cloudflare-worker dev",
+    "deploy:cf": "pnpm --filter @pr-guardian/cloudflare-worker deploy",
+    "bootstrap:cf": "bash ./scripts/cloudflare-bootstrap.sh pr-guardian-arena",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "migrate": "pnpm --filter @pr-guardian/common migrate",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "prettier": "^3.5.3",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2",
+    "vitest": "^2.1.9"
+  }
+}

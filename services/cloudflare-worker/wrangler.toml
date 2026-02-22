@@ -1,0 +1,31 @@
+name = "pr-guardian-arena"
+main = "src/index.ts"
+compatibility_date = "2026-02-21"
+workers_dev = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "pr-guardian-arena"
+database_id = "__REPLACE_WITH_D1_DATABASE_ID__"
+migrations_dir = "migrations"
+
+[[queues.producers]]
+binding = "RUN_QUEUE"
+queue = "pr-guardian-runs"
+
+[[queues.consumers]]
+queue = "pr-guardian-runs"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 3
+
+[vars]
+APP_BASE_URL = "https://__REPLACE_WITH_WORKER_URL__"
+GITHUB_APP_SLUG = ""
+GITHUB_OAUTH_CLIENT_ID = "__REPLACE_WITH_GITHUB_OAUTH_CLIENT_ID__"
+MAX_REPOS = "5"
+TOP_PATCH_COUNT = "3"
+OPENAI_MODEL = "gpt-5.3-codex"
+ALLOWED_REPOS = ""
+AUTO_ONBOARD_WEBHOOKS = "false"
+SESSION_TTL_DAYS = "14"

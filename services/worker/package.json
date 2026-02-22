@@ -1,0 +1,20 @@
+{
+  "name": "@pr-guardian/worker",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsx watch src/index.ts",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@pr-guardian/app-server-client": "workspace:*",
+    "@pr-guardian/common": "workspace:*",
+    "@pr-guardian/domain": "workspace:*",
+    "bullmq": "^5.46.1",
+    "ioredis": "^5.4.2"
+  }
+}
