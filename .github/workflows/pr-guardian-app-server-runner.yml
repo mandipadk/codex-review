@@ -1,0 +1,46 @@
+name: PR Guardian App Server Runner
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_payload:
+        description: JSON payload for a single PR Guardian run
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: '10'
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Codex CLI
+        run: npm install -g @openai/codex
+
+      - name: Run Codex App Server analysis
+        run: pnpm exec tsx services/worker/src/app-server-action-runner.ts
+        env:
+          PGA_RUN_PAYLOAD: ${{ github.event.inputs.run_payload }}
+          GITHUB_APP_ID: ${{ secrets.GITHUB_APP_ID }}
+          GITHUB_APP_PRIVATE_KEY: ${{ secrets.GITHUB_APP_PRIVATE_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          INTERNAL_CALLBACK_SECRET: ${{ secrets.PGA_INTERNAL_CALLBACK_SECRET }}
+          CODEX_BIN: codex

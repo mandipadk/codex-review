@@ -10,6 +10,7 @@ export interface AppConfig {
   model: string;
   allowlist: Set<string>;
   autoOnboardWebhooks: boolean;
+  executionMode: 'openai_direct' | 'app_server_actions';
 }
 
 export interface AppConfigOverrides {
@@ -29,11 +30,18 @@ export interface Env {
   GITHUB_APP_SLUG?: string;
   GITHUB_OAUTH_CLIENT_ID: string;
   GITHUB_OAUTH_CLIENT_SECRET: string;
+  ACTIONS_DISPATCH_TOKEN?: string;
+  INTERNAL_CALLBACK_SECRET?: string;
 
   OPENAI_API_KEY: string;
   OPENAI_MODEL?: string;
   APP_BASE_URL: string;
 
+  EXECUTION_MODE?: string;
+  ACTIONS_REPO_OWNER?: string;
+  ACTIONS_REPO_NAME?: string;
+  ACTIONS_WORKFLOW_ID?: string;
+  ACTIONS_WORKFLOW_REF?: string;
   MAX_REPOS?: string;
   TOP_PATCH_COUNT?: string;
   ALLOWED_REPOS?: string;

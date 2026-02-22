@@ -39,12 +39,15 @@ function parseAllowlist(value: string | undefined): Set<string> {
 }
 
 export function readConfig(env: Env): AppConfig {
+  const mode = env.EXECUTION_MODE?.trim().toLowerCase();
+
   return {
     maxRepos: parsePositiveInt(env.MAX_REPOS, 5),
     topPatchCount: parsePositiveInt(env.TOP_PATCH_COUNT, 3),
     model: env.OPENAI_MODEL ?? 'gpt-5.3-codex',
     allowlist: parseAllowlist(env.ALLOWED_REPOS),
-    autoOnboardWebhooks: parseBoolean(env.AUTO_ONBOARD_WEBHOOKS, false)
+    autoOnboardWebhooks: parseBoolean(env.AUTO_ONBOARD_WEBHOOKS, false),
+    executionMode: mode === 'app_server_actions' ? 'app_server_actions' : 'openai_direct'
   };
 }
 

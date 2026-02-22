@@ -1,6 +1,6 @@
 import { parseChatOpsCommand } from './chatops.js';
 import { applyConfigOverrides, readConfig, repoKey } from './config.js';
-import { randomToken, sha256Hex, verifyGitHubSignature } from './crypto.js';
+import { randomToken, sha256Hex, shortHash, verifyGitHubSignature } from './crypto.js';
 import {
   exchangeGitHubOAuthCode,
   getGitHubOAuthUser,
@@ -9,7 +9,7 @@ import {
 } from './github.js';
 import { enqueueJob, enqueueRun, handleQueueJob } from './orchestrator.js';
 import { D1Store } from './store.js';
-import { AppConfig, DashboardUser, Env, QueueJob, RepoRecord } from './types.js';
+import { AppConfig, DashboardUser, Env, Finding, PatchRecord, QueueJob, RepoRecord, TokenUsage } from './types.js';
 
 const SESSION_COOKIE = 'pga_session';
 const OAUTH_STATE_COOKIE = 'pga_oauth_state';
@@ -60,6 +60,53 @@ interface DashboardRepoOption {
   name: string;
   fullName: string;
   installationId: number;
+}
+
+interface AppServerCallbackFinding {
+  id?: string;
+  role?: string;
+  severity?: string;
+  confidence?: number;
+  filePath?: string;
+  startLine?: number;
+  endLine?: number;
+  title?: string;
+  issueKey?: string;
+  evidence?: string;
+  dedupeKey?: string;
+  supportingRoles?: string[];
+  score?: number;
+}
+
+interface AppServerCallbackPatch {
+  findingId?: string;
+  diffText?: string;
+  suggestions?: Array<{
+    filePath?: string;
+    startLine?: number;
+    endLine?: number;
+    body?: string;
+  }>;
+  riskNotes?: string;
+}
+
+interface AppServerCallbackPayload {
+  runId?: number;
+  status?: string;
+  error?: string;
+  checkRunId?: number;
+  tokenUsage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+  };
+  findings?: AppServerCallbackFinding[];
+  patches?: AppServerCallbackPatch[];
+  events?: Array<{
+    source?: string;
+    eventType?: string;
+    payload?: Record<string, unknown>;
+  }>;
 }
 
 function json(data: unknown, status = 200): Response {
@@ -113,6 +160,35 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
     return fallback;
   }
   return parsed;
+}
+
+function clamp01(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.min(1, Math.max(0, value));
+}
+
+function asSeverity(value: string | undefined): Finding['severity'] {
+  if (value === 'critical' || value === 'high' || value === 'medium' || value === 'low') {
+    return value;
+  }
+  return 'medium';
+}
+
+function asRole(value: string | undefined): Finding['role'] {
+  if (value === 'correctness' || value === 'security' || value === 'maintainability') {
+    return value;
+  }
+  return 'correctness';
+}
+
+function asTokenUsage(raw: AppServerCallbackPayload['tokenUsage']): TokenUsage {
+  return {
+    inputTokens: Number(raw?.inputTokens ?? 0) || 0,
+    outputTokens: Number(raw?.outputTokens ?? 0) || 0,
+    totalTokens: Number(raw?.totalTokens ?? 0) || 0
+  };
 }
 
 function cookieIsSecure(request: Request): boolean {
@@ -571,6 +647,7 @@ function renderDashboardPage(params: {
       <div class="card">
         <div><strong>Webhook endpoint</strong>: <code>${escapeHtml(params.baseUrl)}/webhooks/github</code></div>
         <div class="muted" style="margin-top: 0.28rem;">Managed repos limit: ${params.config.maxRepos}</div>
+        <div class="muted" style="margin-top: 0.12rem;">Execution mode: <code>${escapeHtml(params.config.executionMode)}</code></div>
       </div>
       <div class="grid">
         <section class="card">
@@ -838,6 +915,181 @@ async function handleRepoSync(request: Request, env: Env): Promise<Response> {
   return redirect('/app?status=repos_saved');
 }
 
+async function normalizeCallbackFinding(runId: number, raw: AppServerCallbackFinding): Promise<Finding | null> {
+  const filePath = typeof raw.filePath === 'string' ? raw.filePath.trim() : '';
+  const title = typeof raw.title === 'string' ? raw.title.trim() : '';
+  const issueKey = typeof raw.issueKey === 'string' ? raw.issueKey.trim() : '';
+
+  if (!filePath || !title || !issueKey) {
+    return null;
+  }
+
+  const startLineRaw = Number(raw.startLine ?? 1);
+  const endLineRaw = Number(raw.endLine ?? startLineRaw);
+  const startLine = Number.isFinite(startLineRaw) ? Math.max(1, Math.floor(startLineRaw)) : 1;
+  const endLine = Number.isFinite(endLineRaw) ? Math.max(startLine, Math.floor(endLineRaw)) : startLine;
+
+  const dedupeKey =
+    typeof raw.dedupeKey === 'string' && raw.dedupeKey.trim()
+      ? raw.dedupeKey.trim()
+      : await shortHash(`${filePath.toLowerCase()}|${startLine}|${endLine}|${issueKey.toLowerCase()}`);
+
+  const supportingRoles = Array.isArray(raw.supportingRoles)
+    ? raw.supportingRoles
+        .filter((role): role is Finding['role'] => role === 'correctness' || role === 'security' || role === 'maintainability')
+        .slice(0, 3)
+    : [];
+
+  const findingId =
+    typeof raw.id === 'string' && raw.id.trim()
+      ? raw.id.trim()
+      : (crypto.randomUUID ? crypto.randomUUID() : await shortHash(`${runId}:${dedupeKey}:${Date.now()}`));
+
+  return {
+    id: findingId,
+    runId,
+    role: asRole(typeof raw.role === 'string' ? raw.role : undefined),
+    severity: asSeverity(typeof raw.severity === 'string' ? raw.severity : undefined),
+    confidence: clamp01(Number(raw.confidence ?? 0)),
+    filePath,
+    startLine,
+    endLine,
+    title,
+    issueKey,
+    evidence: typeof raw.evidence === 'string' ? raw.evidence : '',
+    dedupeKey,
+    supportingRoles: supportingRoles.length > 0 ? supportingRoles : [asRole(typeof raw.role === 'string' ? raw.role : undefined)],
+    score: Number.isFinite(Number(raw.score)) ? Number(raw.score) : 0
+  };
+}
+
+function normalizeCallbackPatch(raw: AppServerCallbackPatch, allowedFindingIds: Set<string>): PatchRecord | null {
+  const findingId = typeof raw.findingId === 'string' ? raw.findingId.trim() : '';
+  if (!findingId || !allowedFindingIds.has(findingId)) {
+    return null;
+  }
+
+  const suggestions = Array.isArray(raw.suggestions)
+    ? raw.suggestions
+        .filter((candidate) => candidate && typeof candidate === 'object')
+        .map((candidate) => {
+          const filePath = typeof candidate.filePath === 'string' ? candidate.filePath.trim() : '';
+          const startLineRaw = Number(candidate.startLine ?? 1);
+          const endLineRaw = Number(candidate.endLine ?? startLineRaw);
+          const startLine = Number.isFinite(startLineRaw) ? Math.max(1, Math.floor(startLineRaw)) : 1;
+          const endLine = Number.isFinite(endLineRaw) ? Math.max(startLine, Math.floor(endLineRaw)) : startLine;
+          const body = typeof candidate.body === 'string' ? candidate.body : '';
+
+          return {
+            filePath,
+            startLine,
+            endLine,
+            body
+          };
+        })
+        .filter((candidate) => candidate.filePath && candidate.body.trim())
+    : [];
+
+  return {
+    findingId,
+    diffText: typeof raw.diffText === 'string' ? raw.diffText : '',
+    suggestions,
+    riskNotes: typeof raw.riskNotes === 'string' && raw.riskNotes.trim() ? raw.riskNotes : 'Patch suggestion generated.'
+  };
+}
+
+async function handleAppServerCallback(request: Request, env: Env): Promise<Response> {
+  const callbackSecret = env.INTERNAL_CALLBACK_SECRET?.trim();
+  if (!callbackSecret) {
+    return json({ error: 'INTERNAL_CALLBACK_SECRET is not configured' }, 500);
+  }
+
+  const authorization = request.headers.get('authorization') ?? '';
+  if (authorization !== `Bearer ${callbackSecret}`) {
+    return json({ error: 'unauthorized' }, 401);
+  }
+
+  let payload: AppServerCallbackPayload;
+  try {
+    payload = (await request.json()) as AppServerCallbackPayload;
+  } catch {
+    return json({ error: 'invalid json payload' }, 400);
+  }
+
+  const runId = Number(payload.runId);
+  if (!Number.isInteger(runId) || runId <= 0) {
+    return json({ error: 'invalid runId' }, 400);
+  }
+
+  const status = typeof payload.status === 'string' ? payload.status : '';
+  if (status !== 'completed' && status !== 'failed' && status !== 'canceled') {
+    return json({ error: 'invalid status' }, 400);
+  }
+
+  const store = new D1Store(env.DB);
+  const run = await store.getRun(runId);
+  if (!run) {
+    return json({ error: 'run not found' }, 404);
+  }
+
+  if (Number.isInteger(payload.checkRunId) && Number(payload.checkRunId) > 0 && run.checkRunId === null) {
+    await store.setCheckRunId(runId, Number(payload.checkRunId));
+  }
+
+  if (payload.tokenUsage) {
+    await store.recordTokenUsage(runId, asTokenUsage(payload.tokenUsage));
+  }
+
+  if (Array.isArray(payload.events)) {
+    for (const event of payload.events) {
+      const source = typeof event.source === 'string' && event.source.trim() ? event.source : 'app-server-runner';
+      const eventType = typeof event.eventType === 'string' && event.eventType.trim() ? event.eventType : 'event';
+      const eventPayload = event.payload && typeof event.payload === 'object' ? event.payload : {};
+      await store.insertEvent(runId, source, eventType, eventPayload);
+    }
+  }
+
+  if (status === 'completed') {
+    await store.deleteFindingsForRun(runId);
+
+    const normalizedFindings: Finding[] = [];
+    if (Array.isArray(payload.findings)) {
+      for (const candidate of payload.findings) {
+        const normalized = await normalizeCallbackFinding(runId, candidate);
+        if (normalized) {
+          normalizedFindings.push(normalized);
+        }
+      }
+    }
+
+    for (const finding of normalizedFindings) {
+      await store.insertFinding(finding);
+    }
+
+    const allowedFindingIds = new Set(normalizedFindings.map((finding) => finding.id));
+    if (Array.isArray(payload.patches)) {
+      for (const candidate of payload.patches) {
+        const patch = normalizeCallbackPatch(candidate, allowedFindingIds);
+        if (!patch) {
+          continue;
+        }
+        await store.insertPatch(patch);
+      }
+    }
+
+    await store.updateRunStatus(runId, 'completed');
+    return json({ accepted: true, runId, status: 'completed' }, 202);
+  }
+
+  if (status === 'canceled') {
+    await store.updateRunStatus(runId, 'canceled', typeof payload.error === 'string' ? payload.error : 'Run canceled by app-server runner');
+    return json({ accepted: true, runId, status: 'canceled' }, 202);
+  }
+
+  await store.updateRunStatus(runId, 'failed', typeof payload.error === 'string' ? payload.error : 'App-server runner failed');
+  return json({ accepted: true, runId, status: 'failed' }, 202);
+}
+
 async function handlePullRequestWebhook(env: Env, payload: PullRequestWebhook): Promise<Response> {
   const store = new D1Store(env.DB);
   const config = await loadEffectiveConfig(env, store);
@@ -1069,6 +1321,10 @@ const worker: ExportedHandler<Env, QueueJob> = {
 
     if (request.method === 'POST' && url.pathname === '/webhooks/github') {
       return handleWebhookRequest(request, env);
+    }
+
+    if (request.method === 'POST' && url.pathname === '/internal/app-server/callback') {
+      return handleAppServerCallback(request, env);
     }
 
     const retryMatch = /^\/internal\/runs\/(\d+)\/retry$/.exec(url.pathname);

@@ -410,6 +410,10 @@ export class D1Store {
     return mapFinding(row);
   }
 
+  async deleteFindingsForRun(runId: number): Promise<void> {
+    await this.db.prepare('DELETE FROM findings WHERE run_id = ?').bind(runId).run();
+  }
+
   async insertPatch(patch: PatchRecord): Promise<void> {
     await this.db
       .prepare(

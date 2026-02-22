@@ -8,6 +8,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dev": "tsx watch src/index.ts",
+    "run:app-server-action": "tsx src/app-server-action-runner.ts",
     "test": "vitest run"
   },
   "dependencies": {

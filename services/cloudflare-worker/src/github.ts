@@ -196,6 +196,37 @@ export async function listUserInstallationRepositories(
   return repositories;
 }
 
+export async function dispatchWorkflow(params: {
+  token: string;
+  owner: string;
+  repo: string;
+  workflowId: string;
+  ref: string;
+  inputs?: Record<string, string>;
+}): Promise<void> {
+  const response = await fetch(`${GITHUB_API}/repos/${params.owner}/${params.repo}/actions/workflows/${params.workflowId}/dispatches`, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/vnd.github+json',
+      Authorization: `Bearer ${params.token}`,
+      'User-Agent': 'pr-guardian-arena-cloudflare',
+      'X-GitHub-Api-Version': '2022-11-28',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      ref: params.ref,
+      inputs: params.inputs ?? {}
+    })
+  });
+
+  if (response.status === 204) {
+    return;
+  }
+
+  const text = await response.text();
+  throw new Error(`GitHub workflow dispatch failed (${response.status}): ${text}`);
+}
+
 export async function createCheckRun(
   token: string,
   owner: string,

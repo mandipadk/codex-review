@@ -9,13 +9,15 @@ describe('readConfig', () => {
       TOP_PATCH_COUNT: '2',
       ALLOWED_REPOS: 'acme/api, acme/web',
       OPENAI_MODEL: 'gpt-5.3-codex',
-      AUTO_ONBOARD_WEBHOOKS: 'true'
+      AUTO_ONBOARD_WEBHOOKS: 'true',
+      EXECUTION_MODE: 'app_server_actions'
     } as never);
 
     expect(config.maxRepos).toBe(7);
     expect(config.topPatchCount).toBe(2);
     expect(config.allowlist.has('acme/api')).toBe(true);
     expect(config.autoOnboardWebhooks).toBe(true);
+    expect(config.executionMode).toBe('app_server_actions');
   });
 
   it('applies dashboard overrides on top of env defaults', () => {
@@ -37,5 +39,6 @@ describe('readConfig', () => {
     expect(merged.model).toBe('gpt-5.3-mini');
     expect(merged.allowlist.has('acme/api')).toBe(true);
     expect(merged.autoOnboardWebhooks).toBe(false);
+    expect(merged.executionMode).toBe('openai_direct');
   });
 });

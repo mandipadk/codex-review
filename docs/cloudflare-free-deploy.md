@@ -1,80 +1,71 @@
-# Cloudflare Free Deploy Guide (Shared Team App)
+# Cloudflare + GitHub Actions Deploy Guide (Strict Codex App Server)
 
-This deploy target is a **single hosted app** for you and your team, not one instance per developer.
+This setup keeps Cloudflare as the shared control plane and uses GitHub Actions runners for strict `codex app-server` execution.
 
-## What gets deployed
+## Architecture
 
-- Cloudflare Worker:
-  - Web UI dashboard (`/app`)
-  - GitHub OAuth login
-  - GitHub webhook endpoint (`/webhooks/github`)
-  - Queue consumer orchestration
-- Cloudflare D1:
-  - Runs/findings/patches/events
-  - Dashboard users/sessions/settings
-- Cloudflare Queues:
-  - Async run jobs and ChatOps jobs
+1. Cloudflare Worker:
+- Dashboard (`/`, `/app`)
+- GitHub OAuth login
+- Webhook ingestion (`/webhooks/github`)
+- Queue + run orchestration
+- D1 persistence
 
-## Free-tier intent
+2. GitHub Actions runner:
+- Triggered by Worker via workflow dispatch
+- Runs `codex app-server` with:
+  - `thread/start`
+  - `thread/fork`
+  - `review/start`
+  - `turn/start`
+- Posts check/comment to PR
+- Calls Worker callback endpoint (`/internal/app-server/callback`)
 
-This stack is designed for Cloudflare free products (Worker + D1 + Queues) for a small repo set.
+3. Cloudflare D1:
+- Runs, findings, patches, events
+- Dashboard users/sessions/settings
 
-Model/API usage is still billed by your model provider.
+## Cost model
+
+1. Cloudflare: free-tier friendly for Worker, D1, Queue usage at small scale.
+2. GitHub Actions: uses your Actions minutes unless you use self-hosted runners.
+3. Model usage: billed by your model provider.
 
 ## One-time setup
 
-1. Authenticate wrangler:
+1. Wrangler login:
 
 ```bash
 npx wrangler whoami
 ```
 
-2. Bootstrap Cloudflare resources:
+2. Bootstrap Worker resources:
 
 ```bash
 pnpm bootstrap:cf
 ```
 
-3. Update `/Users/mandipadhikari/WorkInProgress/codex-server/services/cloudflare-worker/wrangler.toml`:
-
-- `d1_databases[0].database_id`
-- `vars.APP_BASE_URL` (your Worker URL, e.g. `https://pr-guardian-arena.<subdomain>.workers.dev`)
-- `vars.GITHUB_OAUTH_CLIENT_ID`
-- optional: `vars.GITHUB_APP_SLUG`
-
-4. Apply migrations:
+3. Apply D1 migrations:
 
 ```bash
 cd services/cloudflare-worker
 npx wrangler d1 migrations apply pr-guardian-arena --remote
 ```
 
-## GitHub setup required
+## Configure `wrangler.toml`
 
-You need two GitHub integrations:
+Update `/Users/mandipadhikari/WorkInProgress/codex-server/services/cloudflare-worker/wrangler.toml`:
 
-1. **GitHub App** (for webhook + PR review actions)
-2. **GitHub OAuth App** (for dashboard login)
+1. `d1_databases[0].database_id`
+2. `vars.APP_BASE_URL`
+3. `vars.GITHUB_OAUTH_CLIENT_ID`
+4. `vars.EXECUTION_MODE=app_server_actions`
+5. `vars.ACTIONS_REPO_OWNER`
+6. `vars.ACTIONS_REPO_NAME`
+7. `vars.ACTIONS_WORKFLOW_ID=pr-guardian-app-server-runner.yml`
+8. `vars.ACTIONS_WORKFLOW_REF` (default branch for workflow dispatch)
 
-### GitHub App
-
-- Permissions:
-  - Pull requests: Read
-  - Issues: Read and Write
-  - Checks: Read and Write
-  - Contents: Read
-- Events:
-  - Pull request
-  - Issue comment
-- Webhook URL:
-  - `https://<worker-subdomain>.workers.dev/webhooks/github`
-
-### GitHub OAuth App
-
-- Homepage URL: `https://<worker-subdomain>.workers.dev`
-- Authorization callback URL: `https://<worker-subdomain>.workers.dev/auth/github/callback`
-
-## Required secrets
+## Required Worker secrets
 
 From `/Users/mandipadhikari/WorkInProgress/codex-server/services/cloudflare-worker`:
 
@@ -84,7 +75,46 @@ npx wrangler secret put GITHUB_APP_ID
 npx wrangler secret put GITHUB_APP_PRIVATE_KEY
 npx wrangler secret put GITHUB_OAUTH_CLIENT_SECRET
 npx wrangler secret put OPENAI_API_KEY
+npx wrangler secret put ACTIONS_DISPATCH_TOKEN
+npx wrangler secret put INTERNAL_CALLBACK_SECRET
 ```
+
+Notes:
+1. `ACTIONS_DISPATCH_TOKEN` should be a token that can call `workflow_dispatch` on your control repo.
+2. `INTERNAL_CALLBACK_SECRET` must match GitHub repository secret `PGA_INTERNAL_CALLBACK_SECRET`.
+
+## GitHub requirements
+
+You need:
+
+1. GitHub App (for PR checks/comments + webhook)
+2. GitHub OAuth App (dashboard login)
+3. GitHub Actions workflow in control repo:
+- `/Users/mandipadhikari/WorkInProgress/codex-server/.github/workflows/pr-guardian-app-server-runner.yml`
+
+### GitHub App permissions
+
+1. Pull requests: Read
+2. Issues: Read and write
+3. Checks: Read and write
+4. Contents: Read
+5. Events:
+- Pull request
+- Issue comment
+
+### GitHub OAuth App
+
+1. Homepage URL: `https://<worker>.workers.dev`
+2. Callback URL: `https://<worker>.workers.dev/auth/github/callback`
+
+### Control repo Actions secrets
+
+In the repo that contains `pr-guardian-app-server-runner.yml`, add:
+
+1. `GITHUB_APP_ID`
+2. `GITHUB_APP_PRIVATE_KEY`
+3. `OPENAI_API_KEY`
+4. `PGA_INTERNAL_CALLBACK_SECRET`
 
 ## Deploy
 
@@ -92,26 +122,19 @@ npx wrangler secret put OPENAI_API_KEY
 pnpm deploy:cf
 ```
 
-## How your team uses it
+## Runtime flow check
 
-1. Open `https://<worker-subdomain>.workers.dev`
-2. Click **Login with GitHub**
-3. Go to `/app`
-4. Select repos from installed GitHub App installations
-5. Save runtime settings
-6. GitHub webhooks trigger PR runs for active repos
+1. Open `https://<worker>.workers.dev`
+2. Login with GitHub
+3. Select active repos in `/app`
+4. Open/update a PR in active repo
+5. Worker enqueues run and dispatches Actions workflow
+6. Workflow completes Codex App Server run and posts PR report
+7. Callback persists findings/patches in D1
 
-## Runtime controls in dashboard
+## Low-cost defaults
 
-- Model
-- Top patch count per run
-- Allowlist override
-- Auto-onboard toggle for webhook-first behavior
-- Active/inactive repo selection
-
-## Safe defaults for low-cost pilot
-
-- `MAX_REPOS=5`
-- `TOP_PATCH_COUNT=3`
-- `AUTO_ONBOARD_WEBHOOKS=false`
-- Optional explicit `ALLOWED_REPOS`
+1. `MAX_REPOS=5`
+2. `TOP_PATCH_COUNT=3`
+3. `AUTO_ONBOARD_WEBHOOKS=false`
+4. Optional allowlist via `ALLOWED_REPOS`

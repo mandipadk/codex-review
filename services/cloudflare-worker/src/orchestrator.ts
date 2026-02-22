@@ -4,6 +4,7 @@ import {
   createCheckRun,
   createInstallationToken,
   createIssueComment,
+  dispatchWorkflow,
   listPullRequestFiles,
   updateCheckRun
 } from './github.js';
@@ -108,9 +109,18 @@ interface PatchOutput {
 
 export async function handleQueueJob(env: Env, job: QueueJob): Promise<void> {
   switch (job.type) {
-    case 'run_pr':
-      await runPullRequestAnalysis(env, job.runId);
+    case 'run_pr': {
+      const store = new D1Store(env.DB);
+      const config = applyConfigOverrides(readConfig(env), await store.getConfigOverrides());
+
+      if (config.executionMode === 'app_server_actions') {
+        await dispatchAppServerRun(env, store, config, job.runId);
+        return;
+      }
+
+      await runPullRequestAnalysis(env, store, config, job.runId);
       return;
+    }
     case 'cancel_run':
       await cancelRun(env, job.runId, job.reason);
       return;
@@ -125,9 +135,12 @@ export async function handleQueueJob(env: Env, job: QueueJob): Promise<void> {
   }
 }
 
-async function runPullRequestAnalysis(env: Env, runId: number): Promise<void> {
-  const store = new D1Store(env.DB);
-  const config = applyConfigOverrides(readConfig(env), await store.getConfigOverrides());
+async function runPullRequestAnalysis(
+  env: Env,
+  store: D1Store,
+  config: ReturnType<typeof readConfig>,
+  runId: number
+): Promise<void> {
   const run = await store.getRunWithRepo(runId);
 
   if (!run) {
@@ -257,6 +270,107 @@ async function runPullRequestAnalysis(env: Env, runId: number): Promise<void> {
       run.repo.name,
       run.prNumber,
       `PR Guardian Arena failed for run ${runId}: ${message}`
+    );
+  }
+}
+
+async function dispatchAppServerRun(
+  env: Env,
+  store: D1Store,
+  config: ReturnType<typeof readConfig>,
+  runId: number
+): Promise<void> {
+  const run = await store.getRunWithRepo(runId);
+  if (!run) {
+    return;
+  }
+
+  const dispatchToken = env.ACTIONS_DISPATCH_TOKEN?.trim();
+  if (!dispatchToken) {
+    await store.updateRunStatus(runId, 'failed', 'ACTIONS_DISPATCH_TOKEN is required when EXECUTION_MODE=app_server_actions');
+    return;
+  }
+
+  const workflowOwner = (env.ACTIONS_REPO_OWNER?.trim() || run.repo.owner).trim();
+  const workflowRepo = (env.ACTIONS_REPO_NAME?.trim() || run.repo.name).trim();
+  const workflowId = (env.ACTIONS_WORKFLOW_ID?.trim() || 'pr-guardian-app-server-runner.yml').trim();
+  const workflowRef = (env.ACTIONS_WORKFLOW_REF?.trim() || 'main').trim();
+  const baseUrl = env.APP_BASE_URL.trim().replace(/\/+$/, '');
+
+  await store.updateRunStatus(runId, 'running');
+
+  const installationToken = await createInstallationToken(env.GITHUB_APP_ID, env.GITHUB_APP_PRIVATE_KEY, run.repo.installationId);
+
+  let checkRunId: number | null = run.checkRunId;
+
+  try {
+    if (!checkRunId) {
+      checkRunId = await createCheckRun(
+        installationToken,
+        run.repo.owner,
+        run.repo.name,
+        run.headSha,
+        'PR Guardian Arena started',
+        'Queued Codex App Server execution on GitHub Actions runner.'
+      );
+      await store.setCheckRunId(runId, checkRunId);
+    }
+
+    const callbackUrl = `${baseUrl}/internal/app-server/callback`;
+    const runPayload = {
+      runId,
+      repoOwner: run.repo.owner,
+      repoName: run.repo.name,
+      installationId: run.repo.installationId,
+      prNumber: run.prNumber,
+      headSha: run.headSha,
+      baseBranch: run.baseBranch,
+      model: config.model,
+      topPatchCount: config.topPatchCount,
+      checkRunId,
+      callbackUrl
+    };
+
+    await dispatchWorkflow({
+      token: dispatchToken,
+      owner: workflowOwner,
+      repo: workflowRepo,
+      workflowId,
+      ref: workflowRef,
+      inputs: {
+        run_payload: JSON.stringify(runPayload)
+      }
+    });
+
+    await store.insertEvent(runId, 'worker', 'app_server_dispatch', {
+      workflowOwner,
+      workflowRepo,
+      workflowId,
+      workflowRef
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await store.updateRunStatus(runId, 'failed', message);
+    await store.insertEvent(runId, 'worker', 'app_server_dispatch_failed', { message });
+
+    if (checkRunId) {
+      await updateCheckRun(
+        installationToken,
+        run.repo.owner,
+        run.repo.name,
+        checkRunId,
+        'failure',
+        'PR Guardian Arena dispatch failed',
+        message
+      );
+    }
+
+    await createIssueComment(
+      installationToken,
+      run.repo.owner,
+      run.repo.name,
+      run.prNumber,
+      `PR Guardian Arena failed to dispatch App Server run ${runId}: ${message}`
     );
   }
 }
